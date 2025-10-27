@@ -1,4 +1,4 @@
-Tôi sẽ trace chi tiết hành trình của gói PING từ **192.168.0.100 → 192.168.0.104** qua tất cả các interface và các hàm xử lý:
+Trace chi tiết hành trình của gói PING từ **192.168.0.100 → 192.168.0.104** qua tất cả các interface và các hàm xử lý:
 
 ---
 
