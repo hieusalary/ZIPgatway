@@ -1059,3 +1059,213 @@ static void NOP_Callback(BYTE bStatus, void* user, TX_STATUS_TYPE *t)
   - Nếu node không phản hồi → Reply ICMP Destination Unreachable
 
 Đây chính là cơ chế **IP Emulation** mà documentation đã mô tả!
+
+
+
+
+
+## **Z/IP GATEWAY TỰ SINH MAC ẢO CHO CHÍNH NÓ**
+
+### **📍 VỊ TRÍ CODE:**
+
+**File:** ZIP_Router.c  
+**Hàm:** `permute_l2_addr()` - **Dòng 692-708**  
+**Được gọi trong:** `ZIP_eeprom_init()` - **Dòng 770 và 830**
+
+---
+
+### **🔍 THUẬT TOÁN SINH MAC:**
+
+```c
+/* Generate Ethernet MAC address*/
+static void permute_l2_addr(uip_lladdr_t* a)
+{
+  uint32_t seed;
+
+  // ═══════════════════════════════════════════════════════════
+  // 1. TẠO SEED TỪ: Gateway NodeID + HomeID + MAC cũ (nếu có)
+  // ═══════════════════════════════════════════════════════════
+  seed = (MyNodeID << 24) | (MyNodeID << 16) | (MyNodeID << 8) | (MyNodeID << 0);
+  seed ^= homeID;
+  seed ^= (a->addr[3] << 16) | (a->addr[4] << 8) | (a->addr[5] << 0);
+  srand(seed);
+
+  // ═══════════════════════════════════════════════════════════
+  // 2. SINH MAC VỚI IEEE OUI CỦA ZENSYS (SILICON LABS)
+  // ═══════════════════════════════════════════════════════════
+  a->addr[0] = 0x00; //IEEE OUI Assignment for Zensys
+  a->addr[1] = 0x1E; //
+  a->addr[2] = 0x32; //
+  
+  // ═══════════════════════════════════════════════════════════
+  // 3. 3 BYTE CUỐI: RANDOM (dựa trên seed)
+  // ═══════════════════════════════════════════════════════════
+  a->addr[3] = 0x10 | (random_rand() & 0x0F);  // 0x10-0x1F
+  a->addr[4] = random_rand() & 0xFF;           // 0x00-0xFF
+  a->addr[5] = random_rand() & 0xFF;           // 0x00-0xFF
+}
+```
+
+---
+
+### **🎯 KHI NÀO GATEWAY TỰ SINH MAC?**
+
+#### **Trường hợp 1: Lần đầu khởi động (Magic không khớp)**
+```c
+// Dòng 765-770 trong ZIP_eeprom_init()
+if ((magic != ZIPMAGIC) || cfg.clear_eeprom)
+{
+  #ifndef __ASIX_C51__
+    WRN_PRINTF("Writing new MAC addr\n");
+    memset(&uip_lladdr, 0, sizeof(uip_lladdr));
+    
+    // ⚡ SINH MAC MỚI
+    permute_l2_addr(&uip_lladdr);
+  #endif
+  
+  // Lưu vào NVM
+  nvm_config_set(mac_addr, &uip_lladdr);
+  // ...
+}
+```
+
+#### **Trường hợp 2: Migration - MAC trong EEPROM = 00:00:00:00:00:00**
+```c
+// Dòng 824-832: Đọc MAC từ NVM
+nvm_config_get(mac_addr, &uip_lladdr);
+
+/* This is for the migration scenario: If we come up with a valid EEPROM MAGIC,
+ *  but an all-zeros MAC address, we generate a new mac address. */
+if (is_linklayer_addr_zero(&uip_lladdr))
+{
+  memset(&uip_lladdr, 0, sizeof(uip_lladdr));
+  
+  // ⚡ SINH MAC MỚI
+  permute_l2_addr(&uip_lladdr);
+  
+  // Lưu lại vào NVM
+  nvm_config_set(mac_addr, &uip_lladdr);
+}
+
+LOG_PRINTF("L2 HW addr ");
+PRINTLLADDR(&uip_lladdr);
+LOG_PRINTF("\n");
+```
+
+---
+
+### **📊 CẤU TRÚC MAC GATEWAY:**
+
+```
+┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
+│ Byte 0  │ Byte 1  │ Byte 2  │ Byte 3  │ Byte 4  │ Byte 5  │
+├─────────┴─────────┴─────────┼─────────┴─────────┴─────────┤
+│   IEEE OUI (Zensys)         │   Random (từ seed)          │
+│   00:1E:32                  │   1X:XX:XX                  │
+└─────────────────────────────┴─────────────────────────────┘
+
+Ví dụ:
+  MyNodeID = 1
+  HomeID   = 0xABCDEF12
+  
+  Seed = (1<<24)|(1<<16)|(1<<8)|1 ⊕ 0xABCDEF12 ⊕ (existing_mac[3:5])
+  
+  Generated MAC:
+  00:1E:32:15:A3:7B  (random phần cuối)
+       ↑
+       IEEE OUI của Zensys (nay là Silicon Labs)
+```
+
+---
+
+### **💡 CHI TIẾT SEED GENERATION:**
+
+```c
+seed = (MyNodeID << 24) | (MyNodeID << 16) | (MyNodeID << 8) | (MyNodeID << 0);
+// MyNodeID = 1 → seed = 0x01010101
+
+seed ^= homeID;
+// homeID = 0xABCDEF12
+// seed = 0x01010101 ⊕ 0xABCDEF12 = 0xAACCEE13
+
+seed ^= (a->addr[3] << 16) | (a->addr[4] << 8) | (a->addr[5] << 0);
+// Nếu MAC cũ = 00:00:00:00:00:00 → không thay đổi
+// Final seed = 0xAACCEE13
+
+srand(seed);  // Khởi tạo random number generator
+```
+
+---
+
+### **🔑 IEEE OUI ASSIGNMENT:**
+
+```
+00:1E:32 = Zensys A/S (Denmark) 
+         = Silicon Labs (sau khi mua lại Zensys)
+```
+
+**Tra cứu IEEE OUI:**
+- Website: https://standards-oui.ieee.org/
+- `00-1E-32` được cấp cho **Zensys A/S**
+- Zensys được Silicon Labs mua lại năm 2012
+
+---
+
+### **📝 HÀM KIỂM TRA MAC = 00:00:00:00:00:00:**
+
+```c
+// Dòng 723-739
+unsigned is_linklayer_addr_zero(uip_lladdr_t const *a)
+{
+  if(    ((a->addr[0]) == 0)
+      && ((a->addr[1]) == 0)
+      && ((a->addr[2]) == 0)
+      && ((a->addr[3]) == 0)
+      && ((a->addr[4]) == 0)
+      && ((a->addr[5]) == 0)
+      )
+  {
+    return TRUE;
+  }
+  return FALSE;
+}
+```
+
+---
+
+### **🌐 TÙY CHỌN: CẤU HÌNH MAC QUA JSON:**
+
+Theo schema trong zgw_json.schema.json:
+
+```json
+{
+  "zipLanData": {
+    "macAddress": "001E32112345"  // Optional - nếu không có sẽ tự sinh
+  }
+}
+```
+
+**Comment trong schema:**
+> "The MAC address which the gateway uses on the LAN side. **If not provided the gateway will autogenerate a new MAC address.**"
+
+---
+
+### **🎯 TÓM TẮT:**
+
+1. **Gateway tự sinh MAC** bằng hàm `permute_l2_addr()`
+2. **3 byte đầu (OUI)**: `00:1E:32` - IEEE OUI của Zensys/Silicon Labs
+3. **3 byte cuối**: Random dựa trên seed từ `MyNodeID ⊕ homeID ⊕ MAC_cũ`
+4. **Lưu trữ**: NVM (Non-Volatile Memory) của Z-Wave chip
+5. **Deterministic**: Cùng gateway (nodeID + homeID) → cùng seed → cùng MAC
+6. **Persistent**: MAC được lưu vào NVM, chỉ sinh lại khi:
+   - Lần đầu khởi động (magic != ZIPMAGIC)
+   - EEPROM bị xóa (clear_eeprom = true)
+   - MAC trong NVM = 00:00:00:00:00:00 (migration scenario)
+
+**Ví dụ thực tế:**
+```
+Gateway MAC:  00:1E:32:15:A3:7B  ← Tự sinh cho gateway
+Node 4 MAC:   AB:CD:EF:12:00:04  ← Sinh cho node 4 (từ homeID + nodeID)
+```
+
+Đây chính là cách gateway **tạo ra một NIC ảo hoàn chỉnh** với MAC address hợp lệ để tham gia vào mạng Ethernet!
