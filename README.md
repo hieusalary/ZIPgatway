@@ -958,3 +958,104 @@ CRC                Checksum
 | After NAT | Gateway | ::ffff:192.168.0.100 | fd00:bbbb::5 | IPv6/ICMPv6 | Type 128 | 118B |
 | Serial | /dev/ttyACM0 | (encapsulated in ZIP) | Node 5 | Serial API | SEND_DATA | ~150B |
 | RF | 868MHz | Gateway | Node 5 | Z-Wave | ZIP_PACKET | ~180B |
+
+
+
+
+
+
+
+
+## **CHUYỂN ĐỔI ICMP → Z-WAVE NOP**
+
+### **📍 Vị trí chính xác:**
+
+**File:** ClassicZIPNode.c
+
+**Dòng 1030-1042:** Đây là đoạn code **chuyển đổi gói ICMP Echo Request thành Z-Wave NOP**
+
+### **🔍 Chi tiết code:**
+
+```c
+// Dòng 52-53: Định nghĩa Z-Wave NOP command
+const BYTE ZW_NOP[] = { 0 };  // Chỉ 1 byte = 0x00 = COMMAND_CLASS_NO_OPERATION
+
+// ═══════════════════════════════════════════════════════════════════
+// Dòng 1027-1042: CHUYỂN ĐỔI ICMP → NOP
+// ═══════════════════════════════════════════════════════════════════
+case UIP_PROTO_ICMP6:
+  switch(UIP_ICMP_BUF->type)
+  {
+    case ICMP6_ECHO_REQUEST:  // Type 128 = Ping request
+      /*Create a backup of package, in order to make async requests. */
+      DBG_PRINTF("Echo request for classic node %i\n", node);
+      
+      // ═══════════════════════════════════════════════════════════
+      // ⚡ CHUYỂN ĐỔI: ICMP Echo Request → Z-Wave NOP Command
+      // ═══════════════════════════════════════════════════════════
+      /*We send NOP as a non secure package*/
+      ts_param_t p;
+      ts_set_std(&p, node);
+      p.scheme = NO_SCHEME;  // Không mã hóa
+      p.tx_flags = ClassicZIPNode_getTXOptions();
+      
+      // Gửi Z-Wave NOP (chỉ 1 byte = 0x00) đến node
+      if (ClassicZIPNode_SendDataAppl(&p, (u8_t*)ZW_NOP, sizeof(ZW_NOP), NOP_Callback, 0))
+      {
+        return TRUE;
+      }
+      break;
+```
+
+### **📡 Sau khi gửi NOP, callback xử lý reply:**
+
+```c
+// Dòng 171-189: Callback sau khi nhận được ACK từ Z-Wave node
+static void NOP_Callback(BYTE bStatus, void* user, TX_STATUS_TYPE *t)
+{
+  nodeid_t node;
+  
+  // Khôi phục gói ICMP ban đầu từ backup
+  memcpy(&uip_buf[UIP_LLH_LEN], backup_buf, backup_len);
+  node = nodeOfIP(&UIP_IP_BUF->destipaddr);
+  uip_len = backup_len;
+
+  if (bStatus == TRANSMIT_COMPLETE_OK)
+  {
+    // ═══════════════════════════════════════════════════════════
+    // ⚡ CHUYỂN ĐỔI NGƯỢC: Z-Wave ACK → ICMP Echo Reply
+    // ═══════════════════════════════════════════════════════════
+    uip_icmp6_echo_request_input();  // Chuyển Type 128→129
+    tcpip_ipv6_output();             // Gửi reply về PC
+  }
+  else if (rd_get_node_mode(node) != MODE_MAILBOX)
+  {
+    // Nếu node không phản hồi, gửi ICMP Destination Unreachable
+    uip_icmp6_error_output(ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, 0);
+    tcpip_ipv6_output();
+  }
+  
+  ClassicZIPNode_CallSendCompleted_cb(bStatus, NULL, NULL);
+}
+```
+
+### **🎯 TÓM TẮT QUÁ TRÌNH:**
+
+1. **Gateway nhận ICMP Echo Request (Type 128)** từ PC qua tap0
+2. **`ClassicZIPNode_input()`** phát hiện destination là Z-Wave node  
+3. **Dòng 1030:** Switch case `UIP_PROTO_ICMP6` → `ICMP6_ECHO_REQUEST`
+4. **Dòng 1038:** 🔥 **Gửi Z-Wave NOP command (`0x00`) đến node thay vì ICMP**
+5. **Z-Wave node nhận NOP** → Gửi ACK về gateway
+6. **Dòng 171:** `NOP_Callback()` nhận ACK thành công
+7. **Dòng 181:** 🔥 **Gọi `uip_icmp6_echo_request_input()`** → Chuyển ICMP Type 128→129 (Echo Reply)
+8. **Dòng 182:** Gửi ICMP Echo Reply về PC
+
+### **💡 LÝ DO CHUYỂN ĐỔI:**
+
+- Z-Wave nodes **không hỗ trợ IP/ICMP**
+- Gateway **emulate ping** bằng cách:
+  - Gửi **NOP command** (đơn giản nhất, chỉ 1 byte)
+  - Nếu node phản hồi NOP → **Node còn sống** → Reply ping success
+  - Nếu node không phản hồi → Reply ICMP Destination Unreachable
+
+Đây chính là cơ chế **IP Emulation** mà documentation đã mô tả!
