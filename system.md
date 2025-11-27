@@ -340,17 +340,19 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    subgraph Header [ZIP Packet Header (4 bytes)]
-        Command["1 byte\nCommand (0x02)"]
-        Flags0["1 byte\nflags0"]
-        Flags1["1 byte\nflags1"]
-        SeqNo["1 byte\nseqNo"]
-    end
+    %% Basic header fields laid out in order
+    Command["1 byte<br/>Command (0x02)"]
+    Flags0["1 byte<br/>flags0"]
+    Flags1["1 byte<br/>flags1"]
+    SeqNo["1 byte<br/>seqNo"]
     Payload["payload (n bytes)"]
-    Header --> Payload
 
-    subgraph Flags0_bits [flags0 bits (MSB..LSB)]
-        direction TB
+    Command --> Flags0
+    Flags0 --> Flags1
+    Flags1 --> SeqNo
+    SeqNo --> Payload
+
+    subgraph Flags0_bits
         b7["bit7: ACK_REQ (0x80)"]
         b6["bit6: ACK_RES (0x40)"]
         b5["bit5: HDR_EXT"]
@@ -360,10 +362,9 @@ flowchart TB
         b1["bit1: B"]
         b0["bit0: R"]
     end
-    Flags0 --> Flags0_bits
 
-    note right of b7: Nếu set → gateway phải trả ACK_RES\n(trong đường RX) hoặc yêu cầu node trả ACK (khi TX)
-    note right of b6: ACK response từ node/gateway
+    Flags0 --- b7
+    Flags0 --- b6
 ```
 
 ### Giải thích nhanh
