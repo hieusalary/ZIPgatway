@@ -542,3 +542,101 @@ flowchart LR
 
 If you want, I can also create the example SQLite file (`test_virtual_nodes.db`) in `doc/` matching the snapshots above so you can inspect it with the `sqlite3` CLI or a GUI viewer.
 
+
+## Enhanced visual diagrams (more visual)
+
+Below are two richer diagrams: a labeled flowchart (Mermaid) that groups components and an explicit sequence diagram that shows the step-by-step packet flow and mapping lookup. If your editor/viewer supports Mermaid, these will render visually; otherwise the ASCII summary below is a compact visual fallback.
+
+Mermaid flowchart (grouped, annotated):
+
+```mermaid
+flowchart LR
+  %% Groups: DB, RAM, Gateway processes, Network
+  subgraph DB[SQLite]
+    VN["virtual_nodes\n(single column: virtual_id)"]
+    IPA["ip_association\n(persistent IP assoc rows)"]
+  end
+
+  subgraph RAM[Gateway RAM]
+    POOL["temp_assoc_virtual_nodeids[]\n(prealloc pool)"]
+    TAB["temp_association_table\n(active mappings: virtual_id -> ip:port)"]
+  end
+
+  subgraph GW[Gateway Processes]
+    CZ["ClassicZIPUDP_input()\n(accepts UDP from client)"]
+    TA["temp_assoc_create()/setup_and_save()"]
+    SND["send_using_temp_assoc()\n(ZW_SendDataAppl src=virtual_id)"]
+    ZIPR["ZIP_Router / bridge_virtual_node_commandhandler()"]
+    CL["CreateLogicalUDP()\n(lookup -> forward UDP)"]
+  end
+
+  subgraph NET[Network]
+    CLIENT["Z/IP client\n(ip:port)"]
+    ZW["Z-Wave node\n(nodeID)"]
+  end
+
+  %% data flows
+  VN -. unpersist/load .-> POOL
+  POOL -->|assign virtual_id_static| TAB
+  CLIENT -->|1. UDP ZIP ->| CZ
+  CZ -->|2. temp_assoc_create()| TA
+  TA -->|3. store mapping| TAB
+  TA -->|4. use virtual_id| SND
+  SND -->|5. Z-Wave frame src=virtual_id| ZW
+
+  ZW -->|6. reply dst=virtual_id| ZIPR
+  ZIPR -->|7. bridge handler| CL
+  CL -->|8. lookup temp assoc| TAB
+  CL -->|9. UDP to client| CLIENT
+
+  IPA -. persisted assoc rows .-> CL
+
+  click VN href "../src/RD_DataStore_Sqlite.c" "Open RD_DataStore_Sqlite.c"
+  click POOL href "../src/Bridge_temp_assoc.c" "Open Bridge_temp_assoc.c"
+  click TAB href "../src/Bridge_temp_assoc.h" "Open Bridge_temp_assoc.h"
+```
+
+Mermaid sequence diagram (explicit numbered steps):
+
+```mermaid
+sequenceDiagram
+  participant C as Z/IP client
+  participant G as Gateway (ClassicZIP)
+  participant P as temp_association_table (RAM)
+  participant Z as Z-Wave network
+
+  C->>G: 1) UDP ZIP (source: C.ip:C.port)
+  G->>P: 2) temp_assoc_create() (assign virtual_id_static from pool)
+  G->>P: 3) store mapping: virtual_id -> C.ip:C.port
+  G->>Z: 4) ZW_SendDataAppl(src=virtual_id, dst=Znode)
+  Z->>G: 5) Z-Wave reply (dst = virtual_id)
+  G->>P: 6) CreateLogicalUDP() -> temp_assoc_lookup_by_virtual_nodeid(virtual_id)
+  P-->>G: 7) return mapping (C.ip:C.port)
+  G->>C: 8) ZW_SendData_UDP(to C.ip:C.port)
+
+  Note over G,P: Permanent ip_association rows (DB) used when mapping is persisted
+```
+
+ASCII compact summary (fallback):
+
+```
+  CLIENT(ip:port)
+     |
+     | 1) UDP ZIP -> ClassicZIPUDP_input()
+     v
+  temp_assoc_create() assigns virtual_id_static from pool -> temp_association_table[virtual_id -> ip:port]
+     |
+     | 2) send_using_temp_assoc() -> send on Z-Wave with source=virtual_id
+     v
+  Z-Wave node (receives frame)
+     |
+     | reply (dst = virtual_id)
+     v
+  ZIP_Router -> CreateLogicalUDP() -> temp_assoc_lookup_by_virtual_nodeid(virtual_id) -> send UDP to stored ip:port
+```
+
+---
+
+If you'd like a rendered PNG/SVG instead of Mermaid text, I can generate a static SVG file and add it to `doc/` (or create the example SQLite DB). Which would you prefer next?
+
+
